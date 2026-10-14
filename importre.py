@@ -8,14 +8,14 @@ import requests
 from urllib.parse import unquote
 
 # ==================== CONFIGURACIÓN ====================
-WIKI_BASE = "https://digimon.fandom.com"   # wiki de las capturas (inglés)
+WIKI_BASE = "https://digimon.fandom.com"       # datos: tipos, nivel, next forms
+WIKI_ES   = "https://digimon.fandom.com/es"    # texto de la Pokedex (español)
 ARCHIVO   = "pokemon.txt"
-AUTO_EVOLUCIONES = True                    # False = dejar Evolutions vacío
-STAT_MIN  = 20                             # valor mínimo de cada stat al repartir
+AUTO_EVOLUCIONES = True
+STAT_MIN  = 20
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (rellenador personal)"}
 
-# Nivel de la wiki -> puntos totales a repartir en BaseStats
 PUNTOS_NIVEL = {
     "fresh": 200, "baby i": 200,
     "in-training": 300, "training": 300, "baby ii": 300,
@@ -25,7 +25,6 @@ PUNTOS_NIVEL = {
     "mega": 700, "final": 700,
 }
 
-# Nivel del Digimon DESTINO -> número de Level en Evolutions
 NIVELES_EVO = {
     "baby i": 10, "baby ii": 14,
     "in-training": 14, "training": 14,
@@ -36,7 +35,6 @@ NIVELES_EVO = {
 }
 NIVEL_EVO_DEFECTO = 32
 
-# Traducción al español del tipo original (solo informativo, va en Kind)
 TIPOS_ES = {
     "slime": "Limo", "beast": "Bestia", "beastkin": "Bestia",
     "beast man": "Hombre bestia", "beastman": "Hombre bestia",
@@ -57,7 +55,6 @@ TIPOS_ES = {
     "fire": "Fuego", "flame": "Fuego", "ice": "Hielo", "snow": "Nieve",
 }
 
-# Tipo de la wiki -> InternalName de TU types.txt
 MAPEO_TIPOS = {
     "beast": "BEAST", "beastkin": "BEAST", "beast man": "BEAST",
     "beastman": "BEAST", "holy beast": "BEAST", "dark animal": "BEAST",
@@ -78,12 +75,10 @@ MAPEO_TIPOS = {
     "fire": "FIRE", "flame": "FIRE", "ice": "ICE", "snow": "ICE",
 }
 
-# Excepciones puntuales por Digimon (nombre exacto de la wiki -> tu tipo)
 EXCEPCIONES_TIPO = {
     "Taomon": "SACRED",
 }
 
-# Habilidades automáticas según el Type2
 HABILIDADES_POR_TIPO = {
     "BEAST":   ["Animal Instinct", "Ferocity", "Savage Fury"],
     "REPTILE": ["Reinforced Scales", "Predator", "Brutal Bite"],
@@ -110,9 +105,12 @@ DEFAULTS = {
 COPIAR_ANTERIOR = ["BaseEXP", "EffortPoints", "Moves", "HiddenAbility",
                    "GenderRate", "GrowthRate", "Habitat", "StepsToHatch", "Compatibility"]
 
+# Nombres de sección donde puede estar la descripción (inglés + español)
+SECCIONES_PERFIL = ["profile", "perfil", "descripción", "descripcion",
+                    "biografía", "biografia", "reference book"]
+
 # ==================== LIMPIEZA DE WIKITEXTO ====================
 def reemplazar_plantillas(t, conservar=True):
-    """{{plantilla|a|b}} -> 'a' (o '' si conservar=False). nihongo|Beast|獣 -> Beast"""
     def sust(m):
         contenido = m.group(1)
         if conservar and "|" in contenido:
@@ -141,7 +139,6 @@ def limpiar(t, conservar=False):
     return re.sub(r"\s+", " ", t).strip()
 
 def limpiar_campo(v):
-    """Para casillas de infobox: <br> y saltos de línea se convierten en comas."""
     v = re.sub(r"<ref[^>]*/>", "", v)
     v = re.sub(r"<ref[^>]*>.*?</ref>", "", v, flags=re.S)
     v = re.sub(r"<br\s*/?>", ", ", v, flags=re.I)
@@ -180,7 +177,6 @@ def fin_de_plantilla(wt, ini):
     return n
 
 def plantillas_top(wt):
-    """Devuelve TODAS las plantillas de primer nivel de la página."""
     res, i, n = [], 0, len(wt)
     while i < n - 1:
         if wt[i:i+2] == "{{":
@@ -194,7 +190,6 @@ def plantillas_top(wt):
 PISTAS = ("type", "attribute", "level", "next")
 
 def parsear_infobox(wt, verbose=True):
-    """Busca entre TODAS las plantillas la que sea la infobox del Digimon."""
     mejor, mejor_score, mejor_nombre = {}, -1, ""
     for plantilla in plantillas_top(wt):
         partes = dividir_top(plantilla[2:-2])
@@ -212,7 +207,7 @@ def parsear_infobox(wt, verbose=True):
         if score > mejor_score:
             mejor, mejor_score, mejor_nombre = info, score, nombre
     if verbose:
-        if mejor and any(PISTA in c for c in mejor for PISTA in PISTAS):
+        if mejor and any(p in c for c in mejor for p in PISTAS):
             print(f"↳ Infobox encontrada: '{mejor_nombre}' ({len(mejor)} campos)")
         elif mejor:
             print(f"⚠ Plantilla '{mejor_nombre}' encontrada pero sin campos útiles.")
@@ -221,7 +216,6 @@ def parsear_infobox(wt, verbose=True):
     return mejor
 
 def buscar_campo(info, claves, evitar=("card",)):
-    """Primero nombre exacto, luego parcial ('Type', 'tipo', 'next forms'...)."""
     for c in claves:
         if info.get(c):
             return info[c]
@@ -240,7 +234,6 @@ def primer_tipo(v):
     return m.group(0) if m else ""
 
 def mapear_tipo(valor_casilla):
-    """Casilla 'Type' de la wiki -> uno de tus tipos. Si nada encaja, QMARKS."""
     v = (valor_casilla or "").replace("（", "(").replace("）", ")")
     v = re.sub(r"\([^)]*\)", "", v)
     v = re.sub(r"\s+", " ", v).strip().lower()
@@ -266,8 +259,8 @@ def nombre_desde_entrada(txt):
         return unquote(m.group(1)).replace("_", " ")
     return txt.replace("_", " ").strip()
 
-def obtener_pagina(nombre):
-    r = requests.get(f"{WIKI_BASE}/api.php", params={
+def obtener_pagina(nombre, base=WIKI_BASE):
+    r = requests.get(f"{base}/api.php", params={
         "action": "parse", "page": nombre, "prop": "wikitext",
         "redirects": 1, "format": "json", "formatversion": "2",
     }, headers=HEADERS, timeout=20)
@@ -276,6 +269,49 @@ def obtener_pagina(nombre):
     if "error" in data:
         raise ValueError(data["error"]["info"])
     return data["parse"]["wikitext"], data["parse"]["title"]
+
+def buscar_titulo(nombre, base):
+    """Si la página no existe, busca el título más parecido en esa wiki."""
+    try:
+        r = requests.get(f"{base}/api.php", params={
+            "action": "query", "list": "search", "srsearch": nombre,
+            "srlimit": 1, "format": "json", "formatversion": "2",
+        }, headers=HEADERS, timeout=15)
+        res = r.json().get("query", {}).get("search", [])
+        return res[0]["title"] if res else ""
+    except Exception:
+        return ""
+
+# ==================== POKEDEX (ESPAÑOL CON RESPALDO) ====================
+def extraer_perfil(wt, title):
+    """Texto descriptivo: intro de la página o sección Perfil/Descripción."""
+    m = re.search(r"\n==", wt)
+    perfil = limpiar(wt[:m.start()] if m else wt)
+    if len(perfil) < 80:
+        for s in SECCIONES_PERFIL:
+            m2 = re.search(rf"==+\s*{s}\s*==+\s*\n(.*?)(?=\n==|\Z)", wt, re.I | re.S)
+            if m2:
+                cand = limpiar(m2.group(1))
+                if len(cand) > len(perfil):
+                    perfil = cand
+                break
+    if not perfil:
+        return ""
+    return perfil if perfil.lower().startswith(title.lower()) else f"{title}, {perfil}"
+
+def pokedex_es(title):
+    """Descripción en español; si la página no existe, busca título equivalente."""
+    try:
+        wt_es, title_es = obtener_pagina(title, WIKI_ES)
+    except Exception:
+        alt = buscar_titulo(title, WIKI_ES)
+        if not alt:
+            return ""
+        try:
+            wt_es, title_es = obtener_pagina(alt, WIKI_ES)
+        except Exception:
+            return ""
+    return extraer_perfil(wt_es, title_es)
 
 # ==================== NIVEL Y STATS ====================
 def detectar_nivel(texto):
@@ -296,18 +332,7 @@ def generar_stats(total):
         stats[random.randrange(6)] += 1
     return ",".join(map(str, stats))
 
-# ==================== POKEDEX Y EVOLUCIONES ====================
-def texto_pokedex(wt, title):
-    m = re.search(r"\n==", wt)
-    perfil = limpiar(wt[:m.start()] if m else wt)
-    if len(perfil) < 80:
-        m2 = re.search(r"==+\s*(?:profile|perfil)\s*==+\s*\n(.*?)(?=\n==|\Z)", wt, re.I | re.S)
-        if m2:
-            perfil = limpiar(m2.group(1))
-    if not perfil:
-        return ""
-    return perfil if perfil.lower().startswith(title.lower()) else f"{title}, {perfil}"
-
+# ==================== EVOLUCIONES ====================
 def evoluciones(info):
     crudos = buscar_campo(info, ["next forms", "next form", "next",
                                  "evolves to", "evolves into"])
@@ -335,7 +360,8 @@ def siguiente_num(texto):
     return max(nums) + 1 if nums else 1
 
 def entrada_anterior(texto):
-    bloques = re.findall(r"^\[\d+\][^\n]*\n(.*?)(?=^\[\d+\]|\Z)", texto, re.M | re.S)
+    bloques = re.findall(r"^\[\d+\][^\n]*\n(.*?)(?=\n==|^\[\d+\]|\Z)".replace(r"\n==", r"\n\[\d+\]") if False else r"^\[\d+\][^\n]*\n(.*?)(?=^\[\d+\]|\Z)",
+                         texto, re.M | re.S)
     if not bloques:
         return {}
     ant = {}
@@ -346,15 +372,13 @@ def entrada_anterior(texto):
     return ant
 
 def construir_bloque(num, title, info, pokedex, evo, stats, ant):
-    # Type1 = Attribute de la wiki (Data/Virus/Vaccine; resto -> QMARKS)
     attr_crudo = primer_tipo(buscar_campo(info, ["attribute", "atributo"])).lower()
     attribute = attr_crudo.upper() if attr_crudo in ("data", "vaccine", "virus") else "QMARKS"
     print(f"↳ Attribute wiki: '{attr_crudo}' → Type1={attribute}")
 
-    # Type2 = mapeado a TUS tipos; Kind = tipo original traducido (informativo)
     tipo_crudo = buscar_campo(info, ["type", "tipo", "species", "especie"])
     if not tipo_crudo:
-        print(f"⚠ Casilla 'Type' no encontrada. Campos de la infobox: {', '.join(sorted(info))[:200]}")
+        print(f"⚠ Casilla 'Type' no encontrada. Campos: {', '.join(sorted(info))[:200]}")
     type2 = EXCEPCIONES_TIPO.get(title) or mapear_tipo(tipo_crudo)
     tipo_limpio = re.sub(r"\s+", " ", re.sub(r"\([^)]*\)", "", tipo_crudo)).strip()
     clave = tipo_limpio.lower()
@@ -435,10 +459,18 @@ def main():
         if AUTO_EVOLUCIONES and not evo:
             print("⚠ Sin 'Next forms' en la wiki: Evolutions queda vacío.")
 
+        # POKEDEX: primero en español, respaldo en inglés
+        pokedex = pokedex_es(title)
+        if pokedex:
+            print("↳ Pokedex: texto en español ✔")
+        else:
+            pokedex = extraer_perfil(wt, title)
+            print("⚠ Pokedex: no hay texto en español, usando la wiki inglesa.")
+
         texto  = open(ARCHIVO, encoding="utf-8").read()
         num    = siguiente_num(texto)
-        bloque = construir_bloque(num, title, info, texto_pokedex(wt, title),
-                                  evo, stats, entrada_anterior(texto))
+        bloque = construir_bloque(num, title, info, pokedex, evo, stats,
+                                  entrada_anterior(texto))
 
         print("\n" + "-" * 60 + "\n" + bloque + "\n" + "-" * 60)
         if input("¿Añadir al archivo? (s/n): ").strip().lower().startswith("s"):
