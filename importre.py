@@ -25,6 +25,15 @@ PUNTOS_NIVEL = {
     "mega": 700, "final": 700,
 }
 
+EV_POR_NIVEL = {
+    "fresh": (1, 1), "baby i": (1, 1),
+    "in-training": (2, 2), "training": (2, 2), "baby ii": (2, 2),
+    "rookie": (3, 2), "child": (3, 2),
+    "champion": (4, 3), "adult": (4, 3),
+    "ultimate": (5, 3), "perfect": (5, 3),
+    "mega": (6, 4), "final": (6, 4),
+}
+
 NIVELES_EVO = {
     "baby i": 10, "baby ii": 14,
     "in-training": 14, "training": 14,
@@ -96,28 +105,47 @@ HABILIDADES_POR_TIPO = {
 
 DEFAULTS = {
     "GenderRate": "Female50Percent", "GrowthRate": "Parabolic", "BaseEXP": "64",
-    "EffortPoints": "0,0,0,0,0,0", "Rareness": "45", "Happiness": "50",
+    "Rareness": "45", "Happiness": "50",
     "HiddenAbility": "", "Moves": "", "Height": "0.7",
     "Weight": "6.9", "Color": "Yellow", "Habitat": "Grassland",
     "StepsToHatch": "5355", "Compatibility": "Field",
     "BattlerPlayerY": "24", "BattlerEnemyY": "32", "BattlerAltitude": "0",
 }
-COPIAR_ANTERIOR = ["BaseEXP", "EffortPoints", "Moves", "HiddenAbility",
+COPIAR_ANTERIOR = ["BaseEXP", "Moves", "HiddenAbility",
                    "GenderRate", "GrowthRate", "Habitat", "StepsToHatch", "Compatibility"]
 
-# Nombres de sección donde puede estar la descripción (inglés + español)
 SECCIONES_PERFIL = ["profile", "perfil", "descripción", "descripcion",
                     "biografía", "biografia", "reference book"]
 
 # ==================== LIMPIEZA DE WIKITEXTO ====================
-def reemplazar_plantillas(t, conservar=True):
+NOMBRES_SIMPLES = {"nihongo", "tt", "ruby", "r", "sup", "sub", "tl", "transl"}
+
+def reemplazar_plantillas(t, modo="texto"):
+    """modo 'texto': nihongo/tt -> primer arg, resto se elimina.
+       modo 'campo': nihongo/tt -> primer arg, resto -> args unidos con comas
+       (así {{EvoList|[[Greymon]]|[[Tyrannomon]]}} se convierte en la lista)."""
     def sust(m):
         contenido = m.group(1)
-        if conservar and "|" in contenido:
-            primero = contenido.split("|")[1].strip()
-            if primero:
-                return primero
-        return ""
+        partes = contenido.split("|")
+        if len(partes) < 2:
+            return ""
+        nombre = partes[0].strip().lower()
+        args = partes[1:]
+        if nombre in NOMBRES_SIMPLES:
+            return args[0].strip()
+        if modo == "texto":
+            return ""
+        validos = []
+        for a in args:
+            m2 = re.match(r"^\s*([^=]{1,25})=(.*)$", a, re.S)
+            if m2:
+                param = m2.group(1).strip().lower()
+                if param in ("from", "prior", "pre", "prev", "image", "imagen"):
+                    continue
+                a = m2.group(2)
+            if a.strip():
+                validos.append(a.strip())
+        return ",".join(validos)
     while "{{" in t:
         nuevo = re.sub(r"\{\{([^{}]*)\}\}", sust, t)
         if nuevo == t:
@@ -125,11 +153,11 @@ def reemplazar_plantillas(t, conservar=True):
         t = nuevo
     return t
 
-def limpiar(t, conservar=False):
+def limpiar(t):
     t = re.sub(r"<ref[^>]*/>", "", t)
     t = re.sub(r"<ref[^>]*>.*?</ref>", "", t, flags=re.S)
     t = re.sub(r"<!--.*?-->", "", t, flags=re.S)
-    t = reemplazar_plantillas(t, conservar)
+    t = reemplazar_plantillas(t, "texto")
     t = re.sub(r"\[\[(?:File|Image|Archivo|Imagen|Category|Categoría)\s*:[^\]]*\]\]", "", t, flags=re.I)
     t = re.sub(r"__[A-Z]+__", "", t)
     t = re.sub(r"<[^>]+>", " ", t)
@@ -144,7 +172,16 @@ def limpiar_campo(v):
     v = re.sub(r"<br\s*/?>", ", ", v, flags=re.I)
     v = re.sub(r"\n+", ", ", v)
     v = v.replace("*", " ")
-    return limpiar(v, conservar=True)
+    return limpiar_template_de_campo(v)
+
+def limpiar_template_de_campo(v):
+    v = reemplazar_plantillas(v, "campo")
+    t = re.sub(r"\[\[(?:File|Image|Archivo|Imagen|Category|Categoría)\s*:[^\]]*\]\]", "", v, flags=re.I)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"\[\[[^\]|]*\|([^\]]*)\]\]", r"\1", t)
+    t = re.sub(r"\[\[([^\]]*)\]\]", r"\1", t)
+    t = t.replace("'''", "").replace("''", "")
+    return re.sub(r"\s+", " ", t).strip()
 
 # ==================== PARSER DE INFOBOX ====================
 def dividir_top(s):
@@ -176,22 +213,24 @@ def fin_de_plantilla(wt, ini):
             i += 1
     return n
 
-def plantillas_top(wt):
+def todas_las_plantillas(wt):
+    """Captura TODAS las plantillas, incluidas las anidadas dentro de otras."""
     res, i, n = [], 0, len(wt)
     while i < n - 1:
         if wt[i:i+2] == "{{":
             fin = fin_de_plantilla(wt, i)
-            res.append(wt[i:fin])
-            i = fin
+            if fin > i + 2:
+                res.append(wt[i:fin])
+            i += 2          # sigue mirando DENTRO por si la infobox está anidada
         else:
             i += 1
     return res
 
-PISTAS = ("type", "attribute", "level", "next")
+PISTAS = ("type", "attribute", "level", "next", "prior", "family")
 
 def parsear_infobox(wt, verbose=True):
     mejor, mejor_score, mejor_nombre = {}, -1, ""
-    for plantilla in plantillas_top(wt):
+    for plantilla in todas_las_plantillas(wt):
         partes = dividir_top(plantilla[2:-2])
         if len(partes) < 2:
             continue
@@ -202,20 +241,20 @@ def parsear_infobox(wt, verbose=True):
                 k, v = parte.split("=", 1)
                 info[k.strip().lower()] = limpiar_campo(v)
         score = sum(1 for c in info if any(p in c for p in PISTAS))
-        if "infobox" in nombre or "digimon" in nombre:
+        if "infobox" in nombre:
             score += 10
         if score > mejor_score:
             mejor, mejor_score, mejor_nombre = info, score, nombre
     if verbose:
         if mejor and any(p in c for c in mejor for p in PISTAS):
-            print(f"↳ Infobox encontrada: '{mejor_nombre}' ({len(mejor)} campos)")
+            print(f"↳ Infobox: '{mejor_nombre}' ({len(mejor)} campos)")
         elif mejor:
-            print(f"⚠ Plantilla '{mejor_nombre}' encontrada pero sin campos útiles.")
+            print(f"⚠ Plantilla '{mejor_nombre}' sin campos útiles: {', '.join(sorted(mejor))[:200]}")
         else:
-            print("⚠ No encontré ninguna infobox en la página.")
+            print("⚠ No encontré infobox en la página.")
     return mejor
 
-def buscar_campo(info, claves, evitar=("card",)):
+def buscar_campo(info, claves, evitar=("card", "tab", "gallery", "video")):
     for c in claves:
         if info.get(c):
             return info[c]
@@ -227,30 +266,120 @@ def buscar_campo(info, claves, evitar=("card",)):
                 return info[c]
     return ""
 
-# ==================== TIPOS ====================
-def primer_tipo(v):
-    v = re.sub(r"\([^)]*\)", "", v or "")
-    m = re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñü-]+", v)
-    return m.group(0) if m else ""
+# ==================== EVOLUCIONES (3 estrategias) ====================
+CLAVES_EVO_EXACTAS = ["next forms", "next form", "next", "evolves to",
+                      "evolves into", "digivolves to", "digivolves into",
+                      "next evolution", "to"]
+CLAVES_EVO_PARCIALES = ["next form", "next", "evolves", "digivolves", "evolution"]
+VALORES_VACIOS = ("none", "n/a", "—", "-", "unknown", "desconocido")
 
-def mapear_tipo(valor_casilla):
-    v = (valor_casilla or "").replace("（", "(").replace("）", ")")
-    v = re.sub(r"\([^)]*\)", "", v)
-    v = re.sub(r"\s+", " ", v).strip().lower()
-    for clave in sorted(MAPEO_TIPOS, key=len, reverse=True):
-        if re.search(rf"\b{re.escape(clave)}\b", v):
-            return MAPEO_TIPOS[clave]
-    for palabra in re.findall(r"[a-z]+", v):
-        cercanas = difflib.get_close_matches(palabra, MAPEO_TIPOS.keys(), n=1, cutoff=0.75)
-        if cercanas:
-            return MAPEO_TIPOS[cercanas[0]]
-    return "QMARKS"
+def campo_evoluciones(info):
+    for c in CLAVES_EVO_EXACTAS:
+        v = info.get(c, "").strip()
+        if v and v.lower() not in VALORES_VACIOS:
+            return v
+    for c in info:
+        if any(e in c for e in ("card", "tab", "gallery", "video", "image")):
+            continue
+        for clave in CLAVES_EVO_PARCIALES:
+            if clave in c:
+                v = info[c].strip()
+                if v and v.lower() not in VALORES_VACIOS:
+                    return v
+    return ""
+
+def secciones(wt):
+    headers = list(re.finditer(r"^(={2,6})(.+?)\1\s*$", wt, re.M))
+    secs = []
+    for i, m in enumerate(headers):
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(wt)
+        secs.append((len(m.group(1)), m.group(2).strip().lower(), m.start(), end))
+    return secs
+
+def links_de(fragmento):
+    res, vistos = [], set()
+    lineas = fragmento.splitlines()
+    for linea in lineas:
+        if not re.match(r"\s*[\*\#:]", linea):
+            continue
+        m = re.search(r"\[\[([^\]|#]+)", linea)
+        if not m:
+            continue
+        t = m.group(1).strip()
+        if t and ":" not in t and not t.lower().startswith("list of") and t.lower() not in vistos:
+            vistos.add(t.lower()); res.append(t)
+    if not res:   # si no hay viñetas, coge todos los enlaces del bloque
+        for m in re.finditer(r"\[\[([^\]|#]+)", fragmento):
+            t = m.group(1).strip()
+            if t and ":" not in t and not t.lower().startswith("list of") and t.lower() not in vistos:
+                vistos.add(t.lower()); res.append(t)
+    return res
+
+def evoluciones_de_secciones(wt):
+    subs_validas = ("to", "next", "next forms", "next form", "evolves to",
+                    "digivolves to", "evolves into", "digivolves into")
+    for i, (nivel, titulo, ini, fin) in enumerate(secciones(wt)):
+        if "evolv" not in titulo and "digivolv" not in titulo:
+            continue
+        nombres, vistos = [], set()
+        for j in range(i + 1, len(secs)):
+            nl, nt, ni, nf = secs[j]
+            if nl <= nivel:
+                break
+            if nt in subs_validas or nt.startswith(("evolves to", "digivolves to")):
+                for link in links_de(wt[ni:nf]):
+                    if link.lower() not in vistos:
+                        vistos.add(link.lower()); nombres.append(link)
+        if nombres:
+            return nombres, titulo
+    return [], ""
 
 def internal(t):
     return re.sub(r"[^A-Za-z0-9]", "", t).upper()
 
+def internal_evo(t):
+    return internal(re.sub(r"\s*\([^)]*\)", "", t))
+
 def internal_habilidad(nombre):
     return re.sub(r"[^A-Za-z0-9]", "", nombre).upper()
+
+def evoluciones(wt, info):
+    nombres = []
+    # 1) Infobox
+    crudos = campo_evoluciones(info)
+    if crudos:
+        nombres = [n.strip(" .,") for n in crudos.split(",")]
+        nombres = [n for n in nombres if n]
+        if nombres:
+            print(f"↳ Evoluciones sacadas de la infobox ({len(nombres)}).")
+    # 2) Sección 'Evolution' de la página
+    if not nombres:
+        nombres, fuente = evoluciones_de_secciones(wt)
+        if nombres:
+            print(f"↳ Evoluciones sacadas de la sección '{fuente}' ({len(nombres)}).")
+    # 3) Manual
+    if not nombres:
+        print("⚠ No encontré 'Next forms' ni sección de evolución.")
+        print(f"   Campos de la infobox: {', '.join(sorted(info)) if info else '(ninguna)'}")
+        manual = input("   Escribe las evoluciones separadas por comas (Enter = vacío): ").strip()
+        nombres = [n.strip() for n in manual.split(",")] if manual else []
+
+    partes, vistos = [], set()
+    for nombre in nombres:
+        nombre = re.sub(r"\([^)]*\)", "", nombre).strip(" .,")
+        if not nombre or nombre.lower() in vistos:
+            continue
+        vistos.add(nombre.lower())
+        try:
+            wt2, title = obtener_pagina(nombre)
+            info2 = parsear_infobox(wt2, verbose=False)
+            clave = detectar_nivel(buscar_campo(info2, ["level", "nivel"]))
+            num = NIVELES_EVO.get(clave, NIVEL_EVO_DEFECTO)
+        except Exception:
+            title, num = nombre, NIVEL_EVO_DEFECTO
+        partes += [internal_evo(title), "Level", str(num)]
+        print(f"   ↳ Next form: {title} → Level {num}")
+    return ",".join(partes)
 
 # ==================== WIKI ====================
 def nombre_desde_entrada(txt):
@@ -271,7 +400,6 @@ def obtener_pagina(nombre, base=WIKI_BASE):
     return data["parse"]["wikitext"], data["parse"]["title"]
 
 def buscar_titulo(nombre, base):
-    """Si la página no existe, busca el título más parecido en esa wiki."""
     try:
         r = requests.get(f"{base}/api.php", params={
             "action": "query", "list": "search", "srsearch": nombre,
@@ -284,7 +412,6 @@ def buscar_titulo(nombre, base):
 
 # ==================== POKEDEX (ESPAÑOL CON RESPALDO) ====================
 def extraer_perfil(wt, title):
-    """Texto descriptivo: intro de la página o sección Perfil/Descripción."""
     m = re.search(r"\n==", wt)
     perfil = limpiar(wt[:m.start()] if m else wt)
     if len(perfil) < 80:
@@ -300,7 +427,6 @@ def extraer_perfil(wt, title):
     return perfil if perfil.lower().startswith(title.lower()) else f"{title}, {perfil}"
 
 def pokedex_es(title):
-    """Descripción en español; si la página no existe, busca título equivalente."""
     try:
         wt_es, title_es = obtener_pagina(title, WIKI_ES)
     except Exception:
@@ -313,7 +439,7 @@ def pokedex_es(title):
             return ""
     return extraer_perfil(wt_es, title_es)
 
-# ==================== NIVEL Y STATS ====================
+# ==================== NIVEL, STATS Y EFFORT POINTS ====================
 def detectar_nivel(texto):
     t = (texto or "").lower()
     for clave in sorted(PUNTOS_NIVEL, key=len, reverse=True):
@@ -330,29 +456,37 @@ def generar_stats(total):
     stats = [STAT_MIN] * 6
     for _ in range(total - STAT_MIN * 6):
         stats[random.randrange(6)] += 1
-    return ",".join(map(str, stats))
+    return stats
 
-# ==================== EVOLUCIONES ====================
-def evoluciones(info):
-    crudos = buscar_campo(info, ["next forms", "next form", "next",
-                                 "evolves to", "evolves into"])
-    if not crudos:
-        return ""
-    partes = []
-    for nombre in [n.strip(" .,") for n in crudos.split(",") if n.strip(" .,")]:
-        nombre = re.sub(r"\([^)]*\)", "", nombre).strip()
-        if not nombre:
-            continue
-        try:
-            wt2, title = obtener_pagina(nombre)
-            info2 = parsear_infobox(wt2, verbose=False)
-            clave = detectar_nivel(buscar_campo(info2, ["level", "nivel"]))
-            num = NIVELES_EVO.get(clave, NIVEL_EVO_DEFECTO)
-        except Exception:
-            title, num = nombre, NIVEL_EVO_DEFECTO
-        partes += [internal(title), "Level", str(num)]
-        print(f"   ↳ Next form: {title} → Level {num}")
-    return ",".join(partes)
+def calcular_effort(stats, clave):
+    if clave not in EV_POR_NIVEL:
+        return "0,0,0,0,0,0"
+    total, n_stats = EV_POR_NIVEL[clave]
+    orden = sorted(range(6), key=lambda i: stats[i], reverse=True)
+    ev = [0] * 6
+    base, resto = divmod(total, n_stats)
+    for rank, idx in enumerate(orden[:n_stats]):
+        ev[idx] = base + (1 if rank < resto else 0)
+    return ",".join(map(str, ev))
+
+# ==================== TIPOS ====================
+def primer_tipo(v):
+    v = re.sub(r"\([^)]*\)", "", v or "")
+    m = re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñü-]+", v)
+    return m.group(0) if m else ""
+
+def mapear_tipo(valor_casilla):
+    v = (valor_casilla or "").replace("（", "(").replace("）", ")")
+    v = re.sub(r"\([^)]*\)", "", v)
+    v = re.sub(r"\s+", " ", v).strip().lower()
+    for clave in sorted(MAPEO_TIPOS, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(clave)}\b", v):
+            return MAPEO_TIPOS[clave]
+    for palabra in re.findall(r"[a-z]+", v):
+        cercanas = difflib.get_close_matches(palabra, MAPEO_TIPOS.keys(), n=1, cutoff=0.75)
+        if cercanas:
+            return MAPEO_TIPOS[cercanas[0]]
+    return "QMARKS"
 
 # ==================== ARCHIVO ====================
 def siguiente_num(texto):
@@ -360,8 +494,7 @@ def siguiente_num(texto):
     return max(nums) + 1 if nums else 1
 
 def entrada_anterior(texto):
-    bloques = re.findall(r"^\[\d+\][^\n]*\n(.*?)(?=\n==|^\[\d+\]|\Z)".replace(r"\n==", r"\n\[\d+\]") if False else r"^\[\d+\][^\n]*\n(.*?)(?=^\[\d+\]|\Z)",
-                         texto, re.M | re.S)
+    bloques = re.findall(r"^\[\d+\][^\n]*\n(.*?)(?=^\[\d+\]|\Z)", texto, re.M | re.S)
     if not bloques:
         return {}
     ant = {}
@@ -371,14 +504,12 @@ def entrada_anterior(texto):
             ant[k.strip()] = v.strip()
     return ant
 
-def construir_bloque(num, title, info, pokedex, evo, stats, ant):
+def construir_bloque(num, title, info, pokedex, evo, stats, effort, ant):
     attr_crudo = primer_tipo(buscar_campo(info, ["attribute", "atributo"])).lower()
     attribute = attr_crudo.upper() if attr_crudo in ("data", "vaccine", "virus") else "QMARKS"
     print(f"↳ Attribute wiki: '{attr_crudo}' → Type1={attribute}")
 
     tipo_crudo = buscar_campo(info, ["type", "tipo", "species", "especie"])
-    if not tipo_crudo:
-        print(f"⚠ Casilla 'Type' no encontrada. Campos: {', '.join(sorted(info))[:200]}")
     type2 = EXCEPCIONES_TIPO.get(title) or mapear_tipo(tipo_crudo)
     tipo_limpio = re.sub(r"\s+", " ", re.sub(r"\([^)]*\)", "", tipo_crudo)).strip()
     clave = tipo_limpio.lower()
@@ -402,7 +533,8 @@ def construir_bloque(num, title, info, pokedex, evo, stats, ant):
         "InternalName": internal(title),
         "Type1": attribute,
         "Type2": type2,
-        "BaseStats": stats,
+        "BaseStats": ",".join(map(str, stats)),
+        "EffortPoints": effort,
         "Abilities": habilidades,
         "Kind": kind,
         "Pokedex": pokedex,
@@ -440,7 +572,7 @@ def main():
 
         info = parsear_infobox(wt)
 
-        # NIVEL + STATS ALEATORIOS
+        # NIVEL + STATS + EFFORT POINTS
         clave = detectar_nivel(buscar_campo(info, ["level", "nivel"]))
         if not clave:
             if info:
@@ -449,15 +581,19 @@ def main():
         if clave:
             total = PUNTOS_NIVEL[clave]
             stats = generar_stats(total)
-            print(f"↳ Nivel detectado: {clave} → BaseStats aleatorios (total {total}): {stats}")
+            effort = calcular_effort(stats, clave)
+            print(f"↳ Nivel detectado: {clave} → BaseStats (total {total}): "
+                  f"{','.join(map(str, stats))}")
+            print(f"↳ EffortPoints (según sus mejores stats): {effort}")
         else:
-            stats = "50,50,50,50,50,50"
-            print("⚠ Nivel desconocido: pongo stats neutros, corrígelos a mano.")
+            stats = [50] * 6
+            effort = "0,0,0,0,0,0"
+            print("⚠ Nivel desconocido: stats neutros y EV a 0, corrígelos a mano.")
 
         # EVOLUCIONES
-        evo = evoluciones(info) if AUTO_EVOLUCIONES else ""
+        evo = evoluciones(wt, info) if AUTO_EVOLUCIONES else ""
         if AUTO_EVOLUCIONES and not evo:
-            print("⚠ Sin 'Next forms' en la wiki: Evolutions queda vacío.")
+            print("⚠ Evolutions queda vacío.")
 
         # POKEDEX: primero en español, respaldo en inglés
         pokedex = pokedex_es(title)
@@ -469,7 +605,7 @@ def main():
 
         texto  = open(ARCHIVO, encoding="utf-8").read()
         num    = siguiente_num(texto)
-        bloque = construir_bloque(num, title, info, pokedex, evo, stats,
+        bloque = construir_bloque(num, title, info, pokedex, evo, stats, effort,
                                   entrada_anterior(texto))
 
         print("\n" + "-" * 60 + "\n" + bloque + "\n" + "-" * 60)
